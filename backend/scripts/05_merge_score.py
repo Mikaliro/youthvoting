@@ -54,13 +54,21 @@ def merge_election_results(engine) -> int:
 
 
 def compute_scores(engine) -> int:
-    """Compute normalized composite score and assign tier labels."""
+    """
+    Compute normalized composite score and assign tier labels for ALL precincts
+    that have both youth_share and dem_margin data. No threshold filtering here —
+    thresholds are applied at query time in the API so sliders work across the
+    full range.
+
+    Score is normalized using fixed reference points so that a precinct with
+    youth_share=1.0 and dem_margin=1.0 scores 1.0, and one with both at 0
+    scores 0. Scores are clamped to [0, 1].
+    """
     w_youth = cfg.SCORE_WEIGHTS["youth_share"]
     w_margin = cfg.SCORE_WEIGHTS["dem_margin"]
-    y_min = cfg.YOUTH_SHARE_MIN
-    m_floor = cfg.DEM_MARGIN_FLOOR
 
-    # Determine tier thresholds sorted descending
+    # Normalize against full possible range (0→1 for each dimension)
+    # so scores are comparable across all precincts regardless of thresholds.
     tier_cases = " ".join([
         f"WHEN score >= {v['score_min']} THEN '{k}'"
         for k, v in sorted(cfg.TIERS.items(), key=lambda x: -x[1]["score_min"])
@@ -71,14 +79,12 @@ def compute_scores(engine) -> int:
             SELECT
                 precinct_id,
                 GREATEST(0, LEAST(1,
-                    {w_youth} * GREATEST(0, (youth_share - {y_min}) / NULLIF(1 - {y_min}, 0))
-                  + {w_margin} * GREATEST(0, (dem_margin - {m_floor}) / NULLIF(1 - {m_floor}, 0))
+                    {w_youth} * youth_share
+                  + {w_margin} * ((dem_margin + 1.0) / 2.0)
                 )) AS score
             FROM precincts
             WHERE youth_share IS NOT NULL
               AND dem_margin IS NOT NULL
-              AND youth_share >= {y_min}
-              AND dem_margin >= {m_floor}
         )
         UPDATE precincts p
         SET
