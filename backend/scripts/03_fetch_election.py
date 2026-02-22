@@ -1,10 +1,11 @@
 """
-Script 03 — Fetch CA SoS precinct-level election results and load into
-election_results table.
+Script 03 — Load 2024 election results from RDH precinct CSV.
 
-CA SoS publishes county-level CSV files after each election.
-This script downloads the statewide precinct results CSV from the
-official CA SoS website for the configured election date.
+Reads: data/raw/rdh/ca_2024_gen_prec_csv.csv
+Writes: election_results table + updates precincts table with vote totals
+
+The RDH UNIQUE_ID field encodes state+county+precinct and maps to
+the TIGER VTD GEOID20 used as precinct_id in our precincts table.
 
 Usage:
     DATABASE_URL=<url> python 03_fetch_election.py
@@ -13,10 +14,8 @@ Usage:
 import os
 import sys
 import logging
-import io
 from pathlib import Path
 
-import requests
 import pandas as pd
 from sqlalchemy import create_engine, text
 
@@ -28,81 +27,53 @@ log = logging.getLogger(__name__)
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
-# CA SoS 2024 General Election statewide precinct results
-# Adjust URL for different elections as needed
-SOS_RESULTS_URL = (
-    "https://elections.cdn.sos.ca.gov/results/2024-general/"
-    "precinct-results.csv"
-)
 
+def load_rdh_csv() -> pd.DataFrame:
+    """Load and process RDH 2024 precinct election results."""
+    log.info("Loading RDH 2024 precinct CSV...")
+    df = pd.read_csv(cfg.RDH_PRECINCT_CSV, dtype=str, low_memory=False)
+    log.info("Loaded %d precinct rows", len(df))
 
-def fetch_election_results() -> pd.DataFrame:
-    """Download CA SoS precinct results CSV and return filtered DataFrame."""
-    log.info("Downloading election results from CA SoS...")
-    resp = requests.get(SOS_RESULTS_URL, timeout=300, stream=True)
-    resp.raise_for_status()
+    # Coerce vote columns
+    for col in [cfg.RDH_DEM_COL, cfg.RDH_REP_COL, cfg.RDH_TOTAL_COL]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-    df = pd.read_csv(io.BytesIO(resp.content), dtype=str, low_memory=False)
-    log.info("Downloaded %d rows", len(df))
+    # Compute election stats
+    df["dem_votes"]   = df[cfg.RDH_DEM_COL].astype(int)
+    df["rep_votes"]   = df[cfg.RDH_REP_COL].astype(int)
+    df["total_votes"] = df[cfg.RDH_TOTAL_COL].astype(int)
 
-    # Normalize column names (CA SoS format varies by year)
-    df.columns = [c.strip().upper().replace(" ", "_") for c in df.columns]
+    df["dem_pct"] = (
+        df["dem_votes"] / df["total_votes"].replace(0, float("nan"))
+    ).round(4)
+    df["rep_pct"] = (
+        df["rep_votes"] / df["total_votes"].replace(0, float("nan"))
+    ).round(4)
+    df["dem_margin"] = (df["dem_pct"] - df["rep_pct"]).round(4)
 
-    # Filter to presidential contest
-    contest_col = next((c for c in df.columns if "CONTEST" in c), None)
-    if contest_col:
-        df = df[df[contest_col].str.contains(cfg.ELECTION_CONTEST, case=False, na=False)]
+    # Normalize precinct ID to match TIGER VTD GEOID20 (11 chars: state+county+vtdi)
+    # RDH UNIQUE_ID is state(2)+county(3)+precinct — strip to 11 chars if longer
+    df["precinct_id"] = df[cfg.RDH_PRECINCT_ID].str.strip()
 
-    log.info("Filtered to %d rows for contest: %s", len(df), cfg.ELECTION_CONTEST)
-    return df
+    # Also try building an 11-char key from COUNTYFP + PRECINCT
+    df["COUNTYFP_3"] = df[cfg.RDH_COUNTYFP_COL].str.strip().str[-3:].str.zfill(3)
+    df["PRECINCT_6"] = df["PRECINCT"].str.strip().str.zfill(6).str[-6:]
+    df["vtd_key_11"] = "06" + df["COUNTYFP_3"] + df["PRECINCT_6"]
 
+    df["county_name"] = df[cfg.RDH_COUNTY_COL].str.strip()
+    df["election_date"] = cfg.ELECTION_DATE
+    df["contest_name"]  = cfg.ELECTION_CONTEST
 
-def aggregate_to_precincts(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Aggregate candidate rows to precinct-level dem/rep vote totals.
-    Assumes columns: PRECINCT_ID (or similar), COUNTY_NAME, CANDIDATE_PARTY,
-    VOTES, CONTEST_NAME.
-    """
-    # Flexible column mapping
-    col_map = {}
-    for col in df.columns:
-        if "PRECINCT" in col and "ID" in col:
-            col_map["precinct_id"] = col
-        elif "COUNTY" in col:
-            col_map["county_name"] = col
-        elif "PARTY" in col:
-            col_map["party"] = col
-        elif "VOTES" in col and "TOTAL" not in col:
-            col_map["votes"] = col
-        elif "CONTEST" in col:
-            col_map["contest"] = col
-
-    df = df.rename(columns={v: k for k, v in col_map.items()})
-    df["votes"] = pd.to_numeric(df.get("votes", 0), errors="coerce").fillna(0).astype(int)
-
-    dem_mask = df.get("party", pd.Series(dtype=str)).str.upper().str.contains("DEM", na=False)
-    rep_mask = df.get("party", pd.Series(dtype=str)).str.upper().str.contains("REP", na=False)
-
-    groupby_cols = ["precinct_id", "county_name"]
-    groupby_cols = [c for c in groupby_cols if c in df.columns]
-
-    agg = df.groupby(groupby_cols).apply(lambda g: pd.Series({
-        "dem_votes": g.loc[g.index.isin(g[dem_mask].index), "votes"].sum() if "votes" in g.columns else 0,
-        "rep_votes": g.loc[g.index.isin(g[rep_mask].index), "votes"].sum() if "votes" in g.columns else 0,
-        "total_votes": g["votes"].sum() if "votes" in g.columns else 0,
-    })).reset_index()
-
-    agg["dem_pct"] = (agg["dem_votes"] / agg["total_votes"].replace(0, float("nan"))).round(4)
-    agg["rep_pct"] = (agg["rep_votes"] / agg["total_votes"].replace(0, float("nan"))).round(4)
-    agg["dem_margin"] = (agg["dem_pct"] - agg["rep_pct"]).round(4)
-    agg["election_date"] = cfg.ELECTION_DATE
-    agg["contest_name"] = cfg.ELECTION_CONTEST
-
-    return agg
+    return df[[
+        "precinct_id", "vtd_key_11", "county_name",
+        "dem_votes", "rep_votes", "total_votes",
+        "dem_pct", "dem_margin", "election_date", "contest_name"
+    ]]
 
 
 def upsert_election_results(df: pd.DataFrame, engine) -> None:
-    log.info("Upserting %d election result rows...", len(df))
+    """Insert election results into election_results table."""
+    log.info("Inserting %d rows into election_results...", len(df))
     with engine.begin() as conn:
         for _, row in df.iterrows():
             conn.execute(text("""
@@ -114,25 +85,83 @@ def upsert_election_results(df: pd.DataFrame, engine) -> None:
                      :dem_votes, :rep_votes, :total_votes, :dem_pct, :dem_margin)
                 ON CONFLICT DO NOTHING
             """), {
-                "election_date": row.get("election_date", cfg.ELECTION_DATE),
-                "county_name": row.get("county_name", ""),
-                "precinct_id": row.get("precinct_id", ""),
-                "contest_name": cfg.ELECTION_CONTEST,
-                "dem_votes": int(row.get("dem_votes", 0)),
-                "rep_votes": int(row.get("rep_votes", 0)),
-                "total_votes": int(row.get("total_votes", 0)),
-                "dem_pct": float(row["dem_pct"]) if pd.notna(row.get("dem_pct")) else None,
-                "dem_margin": float(row["dem_margin"]) if pd.notna(row.get("dem_margin")) else None,
+                "election_date": row["election_date"],
+                "county_name":   row["county_name"],
+                "precinct_id":   row["precinct_id"],
+                "contest_name":  row["contest_name"],
+                "dem_votes":     int(row["dem_votes"]),
+                "rep_votes":     int(row["rep_votes"]),
+                "total_votes":   int(row["total_votes"]),
+                "dem_pct":       float(row["dem_pct"]) if pd.notna(row.get("dem_pct")) else None,
+                "dem_margin":    float(row["dem_margin"]) if pd.notna(row.get("dem_margin")) else None,
             })
-    log.info("Upsert complete.")
+    log.info("Election results inserted.")
+
+
+def update_precinct_election_data(df: pd.DataFrame, engine) -> int:
+    """
+    Update precincts table with election results.
+    Tries matching on precinct_id directly, then falls back to vtd_key_11.
+    """
+    matched = 0
+    with engine.begin() as conn:
+        for _, row in df.iterrows():
+            # Try direct match first (RDH UNIQUE_ID = TIGER GEOID20)
+            result = conn.execute(text("""
+                UPDATE precincts SET
+                    county_name = :county_name,
+                    dem_votes   = :dem_votes,
+                    rep_votes   = :rep_votes,
+                    total_votes = :total_votes,
+                    dem_pct     = :dem_pct,
+                    dem_margin  = :dem_margin
+                WHERE precinct_id = :precinct_id
+            """), {
+                "precinct_id": row["precinct_id"],
+                "county_name": row["county_name"],
+                "dem_votes":   int(row["dem_votes"]),
+                "rep_votes":   int(row["rep_votes"]),
+                "total_votes": int(row["total_votes"]),
+                "dem_pct":     float(row["dem_pct"]) if pd.notna(row.get("dem_pct")) else None,
+                "dem_margin":  float(row["dem_margin"]) if pd.notna(row.get("dem_margin")) else None,
+            })
+
+            if result.rowcount == 0:
+                # Fallback: try 11-char VTD key
+                result2 = conn.execute(text("""
+                    UPDATE precincts SET
+                        county_name = :county_name,
+                        dem_votes   = :dem_votes,
+                        rep_votes   = :rep_votes,
+                        total_votes = :total_votes,
+                        dem_pct     = :dem_pct,
+                        dem_margin  = :dem_margin
+                    WHERE precinct_id = :precinct_id
+                """), {
+                    "precinct_id": row["vtd_key_11"],
+                    "county_name": row["county_name"],
+                    "dem_votes":   int(row["dem_votes"]),
+                    "rep_votes":   int(row["rep_votes"]),
+                    "total_votes": int(row["total_votes"]),
+                    "dem_pct":     float(row["dem_pct"]) if pd.notna(row.get("dem_pct")) else None,
+                    "dem_margin":  float(row["dem_margin"]) if pd.notna(row.get("dem_margin")) else None,
+                })
+                if result2.rowcount > 0:
+                    matched += 1
+            else:
+                matched += 1
+
+    total = len(df)
+    log.info("Matched %d / %d precincts (%.1f%%)", matched, total, 100 * matched / total if total else 0)
+    return matched
 
 
 def main():
     engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-    raw_df = fetch_election_results()
-    agg_df = aggregate_to_precincts(raw_df)
-    upsert_election_results(agg_df, engine)
-    log.info("Script 03 complete — %d precincts with election data.", len(agg_df))
+    df = load_rdh_csv()
+    upsert_election_results(df, engine)
+    update_precinct_election_data(df, engine)
+    log.info("Script 03 complete.")
 
 
 if __name__ == "__main__":
