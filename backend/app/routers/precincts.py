@@ -11,8 +11,8 @@ router = APIRouter(tags=["precincts"])
 @router.get("/precincts")
 def get_precincts(
     district: Optional[int] = None,
-    youth_min: float = 0.0,
-    margin_floor: float = -1.0,
+    youth_min: float = 0.15,
+    margin_floor: float = 0.0,
     tier: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
@@ -21,6 +21,7 @@ def get_precincts(
     via json_build_object + json_agg + ST_AsGeoJSON for maximum performance.
     """
     conditions = [
+        "score IS NOT NULL",
         "youth_share >= :youth_min",
         "dem_margin >= :margin_floor",
     ]
@@ -63,6 +64,8 @@ def get_precincts(
         ) AS geojson
         FROM precincts
         WHERE {where_clause}
+        ORDER BY score DESC
+        LIMIT 5000
     """)
 
     row = db.execute(sql, params).fetchone()

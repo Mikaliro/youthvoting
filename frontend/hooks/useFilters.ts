@@ -13,8 +13,8 @@ export interface FilterState {
 
 export const useFilters = create<FilterState>((set) => ({
   district: null,
-  youthMin: 0.0,
-  marginFloor: -1.0,
+  youthMin: 0.15,
+  marginFloor: 0.0,
   setDistrict: (district) => set({ district }),
   setYouthMin: (youthMin) => set({ youthMin }),
   setMarginFloor: (marginFloor) => set({ marginFloor }),
