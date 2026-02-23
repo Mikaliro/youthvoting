@@ -7,7 +7,7 @@ function pct(v: number) {
 }
 
 export default function FilterSliders() {
-  const { youthMin, marginFloor, setYouthMin, setMarginFloor } = useFilters();
+  const { youthMin, marginFloor, setYouthMin, setMarginFloor, applyFilters } = useFilters();
 
   return (
     <div className="space-y-4">
@@ -55,6 +55,13 @@ export default function FilterSliders() {
           <span>+50%</span>
         </div>
       </div>
+
+      <button
+        onClick={applyFilters}
+        className="w-full mt-2 px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold rounded-md transition-colors"
+      >
+        Apply Filters
+      </button>
     </div>
   );
 }

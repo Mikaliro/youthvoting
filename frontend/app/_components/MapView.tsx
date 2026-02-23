@@ -40,7 +40,8 @@ export default function MapView() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const [selectedPrecinct, setSelectedPrecinct] = useState<PrecinctProperties | null>(null);
-  const { district, youthMin, marginFloor } = useFilters();
+  const { appliedDistrict, appliedYouthMin, appliedMarginFloor } = useFilters();
+  const [loading, setLoading] = useState(false);
 
   // Initialize map
   useEffect(() => {
@@ -111,25 +112,35 @@ export default function MapView() {
     };
   }, []);
 
-  // Re-fetch GeoJSON when filters change
+  // Re-fetch GeoJSON when applied filters change
   useEffect(() => {
     if (!map.current) return;
 
-    const params = buildFilterParams({ district, youthMin, marginFloor });
+    const params = buildFilterParams({ appliedDistrict, appliedYouthMin, appliedMarginFloor });
     const url = `${API_URL}/api/precincts?${params}`;
 
+    setLoading(true);
     fetch(url)
       .then((r) => r.json())
       .then((geojson) => {
         const source = map.current?.getSource("precincts") as mapboxgl.GeoJSONSource | undefined;
         source?.setData(geojson);
       })
-      .catch(console.error);
-  }, [district, youthMin, marginFloor]);
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, [appliedDistrict, appliedYouthMin, appliedMarginFloor]);
 
   return (
     <div className="relative w-full h-full">
       <div ref={mapContainer} className="w-full h-full" />
+      {loading && (
+        <div className="absolute inset-0 flex items-center justify-center bg-white/50 z-10">
+          <div className="flex flex-col items-center gap-3">
+            <div className="w-10 h-10 border-4 border-blue-700 border-t-transparent rounded-full animate-spin" />
+            <span className="text-sm font-medium text-gray-700">Loading precincts…</span>
+          </div>
+        </div>
+      )}
       {selectedPrecinct && (
         <PrecinctPopup
           properties={selectedPrecinct}
