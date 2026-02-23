@@ -5,10 +5,10 @@ import { useFilters, buildFilterParams } from "@/hooks/useFilters";
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export default function ExportButton() {
-  const { district, youthMin, marginFloor } = useFilters();
+  const { appliedDistrict, appliedYouthMin, appliedMarginFloor } = useFilters();
 
   const handleExport = () => {
-    const params = buildFilterParams({ district, youthMin, marginFloor });
+    const params = buildFilterParams({ appliedDistrict, appliedYouthMin, appliedMarginFloor });
     window.open(`${API_URL}/api/export/csv?${params}`, "_blank");
   };
 
