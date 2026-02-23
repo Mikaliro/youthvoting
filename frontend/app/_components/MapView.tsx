@@ -53,6 +53,11 @@ export default function MapView() {
       style: "mapbox://styles/mapbox/light-v11",
       center: [-119.4179, 36.7783], // California center
       zoom: 5.5,
+      minZoom: 4,
+      maxBounds: [
+        [-128, 22],  // SW corner (covers Hawaii + contiguous US)
+        [-64, 52],   // NE corner
+      ],
     });
 
     map.current.addControl(new mapboxgl.NavigationControl(), "top-right");
