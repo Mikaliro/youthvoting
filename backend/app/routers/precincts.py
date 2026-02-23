@@ -40,32 +40,33 @@ def get_precincts(
     sql = text(f"""
         SELECT json_build_object(
             'type', 'FeatureCollection',
-            'features', COALESCE(json_agg(
-                json_build_object(
-                    'type', 'Feature',
-                    'geometry', ST_AsGeoJSON(COALESCE(geom_simplified, geom))::json,
-                    'properties', json_build_object(
-                        'precinct_id', precinct_id,
-                        'county_name', county_name,
-                        'cd_number', cd_number,
-                        'total_pop', total_pop,
-                        'pop_18_29', pop_18_29,
-                        'youth_share', youth_share,
-                        'dem_votes', dem_votes,
-                        'rep_votes', rep_votes,
-                        'total_votes', total_votes,
-                        'dem_pct', dem_pct,
-                        'dem_margin', dem_margin,
-                        'score', score,
-                        'tier', tier
-                    )
-                )
-            ), '[]'::json)
+            'features', COALESCE(json_agg(f.feature), '[]'::json)
         ) AS geojson
-        FROM precincts
-        WHERE {where_clause}
-        ORDER BY score DESC
-        LIMIT 5000
+        FROM (
+            SELECT json_build_object(
+                'type', 'Feature',
+                'geometry', ST_AsGeoJSON(COALESCE(geom_simplified, geom))::json,
+                'properties', json_build_object(
+                    'precinct_id', precinct_id,
+                    'county_name', county_name,
+                    'cd_number', cd_number,
+                    'total_pop', total_pop,
+                    'pop_18_29', pop_18_29,
+                    'youth_share', youth_share,
+                    'dem_votes', dem_votes,
+                    'rep_votes', rep_votes,
+                    'total_votes', total_votes,
+                    'dem_pct', dem_pct,
+                    'dem_margin', dem_margin,
+                    'score', score,
+                    'tier', tier
+                )
+            ) AS feature
+            FROM precincts
+            WHERE {where_clause}
+            ORDER BY score DESC
+            LIMIT 5000
+        ) f
     """)
 
     row = db.execute(sql, params).fetchone()
