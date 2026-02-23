@@ -45,27 +45,31 @@ def get_precincts(
         FROM (
             SELECT json_build_object(
                 'type', 'Feature',
-                'geometry', ST_AsGeoJSON(COALESCE(geom_simplified, geom))::json,
+                'geometry', ST_AsGeoJSON(COALESCE(p.geom_simplified, p.geom))::json,
                 'properties', json_build_object(
-                    'precinct_id', precinct_id,
-                    'county_name', county_name,
-                    'cd_number', cd_number,
-                    'total_pop', total_pop,
-                    'pop_18_29', pop_18_29,
-                    'youth_share', youth_share,
-                    'dem_votes', dem_votes,
-                    'rep_votes', rep_votes,
-                    'total_votes', total_votes,
-                    'dem_pct', dem_pct,
-                    'dem_margin', dem_margin,
-                    'score', score,
-                    'tier', tier
+                    'precinct_id', p.precinct_id,
+                    'county_name', p.county_name,
+                    'cd_number', p.cd_number,
+                    'total_pop', p.total_pop,
+                    'pop_18_29', p.pop_18_29,
+                    'youth_share', p.youth_share,
+                    'dem_votes', p.dem_votes,
+                    'rep_votes', p.rep_votes,
+                    'total_votes', p.total_votes,
+                    'dem_pct', p.dem_pct,
+                    'dem_margin', p.dem_margin,
+                    'score', p.score,
+                    'tier', p.tier
                 )
             ) AS feature
-            FROM precincts
-            WHERE {where_clause}
-            ORDER BY score DESC
-            LIMIT 5000
+            FROM (
+                SELECT precinct_id
+                FROM precincts
+                WHERE {where_clause}
+                ORDER BY score DESC
+                LIMIT 5000
+            ) ids
+            JOIN precincts p USING (precinct_id)
         ) f
     """)
 
